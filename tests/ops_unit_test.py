@@ -41,11 +41,13 @@ import torch
 from torch._dynamo import testing as dynamo_testing
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
+from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.attention import flex_attention
 from torch.testing._internal import common_methods_invocations
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
+from torch_tpu._internal.compile import compiler as compile_compiler
 from torch_tpu._internal.compile import flex_attention_redirect
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import test_utils as utils
@@ -15963,6 +15965,286 @@ module {{
           out=v2_out_buf,
       )
       self.assertTrue(torch.equal(v2_out_buf.cpu(), v1_out.cpu()))
+
+  @parameterized.product(
+      layout=["2d_3d", "3d_2d", "2d_2d"],
+      dtype_a=[torch.float8_e4m3fn, torch.float8_e5m2],
+  )
+  def test_scaled_grouped_mm_fp8_operands_stablehlo(self, layout, dtype_a):
+    """Verifies that FP8 _scaled_grouped_mm emits chlo.ragged_dot with f8 operands and DEFAULT precision."""
+    if layout == "2d_3d":
+      a = torch.randn(16, 16, dtype=torch.bfloat16).to(dtype_a)
+      b = (
+          torch.randn(2, 16, 16, dtype=torch.bfloat16)
+          .transpose(-1, -2)
+          .to(torch.float8_e4m3fn)
+      )
+      scale_a = torch.ones(16, dtype=torch.float32)
+      scale_b = torch.ones(2, 16, dtype=torch.float32)
+    elif layout == "3d_2d":
+      a = torch.randn(2, 8, 16, dtype=torch.bfloat16).to(dtype_a)
+      b = torch.randn(16, 16, dtype=torch.bfloat16).t().to(torch.float8_e4m3fn)
+      scale_a = torch.ones(2, 8, dtype=torch.float32)
+      scale_b = torch.ones(16, dtype=torch.float32)
+    else:  # 2d_2d
+      a = torch.randn(16, 16, dtype=torch.bfloat16).to(dtype_a)
+      b = torch.randn(16, 16, dtype=torch.bfloat16).t().to(torch.float8_e4m3fn)
+      scale_a = torch.ones(2 * 16, dtype=torch.float32)
+      scale_b = torch.ones(2 * 16, dtype=torch.float32)
+    offs = torch.tensor([8, 16], dtype=torch.int32)
+
+    device = "tpu"
+    a_tpu = a.to(device)
+    b_tpu = b.to(device)
+    offs_tpu = offs.to(device)
+    sa_tpu = scale_a.to(device)
+    sb_tpu = scale_b.to(device)
+
+    debugs = []
+
+    def fn(x, y, sa, sb, o):
+      return torch._scaled_grouped_mm(
+          x, y, sa, sb, offs=o, out_dtype=torch.bfloat16
+      )
+
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      _ = compiled(a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu)
+
+    self.assertNotEmpty(debugs)
+    shlo = debugs[0].stablehlo_forward_text[0]
+    self.assertIn("chlo.ragged_dot", shlo)
+    self.assertNotIn("stablehlo.convert", shlo.split("chlo.ragged_dot")[0])
+    self.assertIn("DEFAULT", shlo)
+    self.assertNotIn("HIGHEST", shlo)
+    f8_a = "f8E4M3FN" if dtype_a == torch.float8_e4m3fn else "f8E5M2"
+    lhs_f8, rhs_f8 = (
+        ("f8E4M3FN", f8_a) if layout == "3d_2d" else (f8_a, "f8E4M3FN")
+    )
+    self.assertRegex(
+        shlo,
+        rf"chlo\.ragged_dot.*tensor<[^>]*{lhs_f8}>.*tensor<[^>]*{rhs_f8}>",
+    )
+
+  @parameterized.parameters(
+      "fwd_2d_3d",
+      "fwd_2d_3d_contiguous_rhs",
+      "fwd_2d_3d_in_graph_transpose",
+      "wgrad_2d_2d",
+      "wgrad_2d_2d_col_major_lhs",
+  )
+  def test_scaled_grouped_mm_torchao_patterns_compile(self, pattern):
+    """Tests torchao.prototype.moe_training shapes under compile and StaticCompiler.
+
+    Verifies torch._scaled_grouped_mm with exact shapes/strides used in torchao
+    and torchtitan (including contiguous RHS from functionalize remove_views in
+    scan layers, in-graph 3D transpose unwrapping, and col-major LHS in wgrad):
+    - fwd/dgrad (2D x 3D): A e4m3 (M, K) row-major, B either (E, N,
+      K).transpose(-2, -1) (col-major per expert), contiguous (E, K, N), or
+      contiguous (E, N, K) transposed inside the compiled graph,
+      sa fp32 [M], sb fp32 [E, N], offs int32 [E], out_dtype bf16,
+      use_fast_accum=True.
+    - wgrad (2D x 2D ragged-K): A [M, T] (row-major or (T, M).t() col-major),
+      B [T, N] (col-major or row-major), sa fp32 [E * M], sb fp32 [E * N],
+      offs int32 [E], out_dtype bf16, use_fast_accum=True.
+    Checks:
+    1. torch.compile(backend="tpu", fullgraph=True) has graph_count == 1 and
+       graph_break_count == 0 via torch._dynamo.explain, matching CPU fp32
+       reference.
+    2. make_fx + StaticCompiler runs and matches eager result.
+    """
+    e = 8
+    if pattern in (
+        "fwd_2d_3d",
+        "fwd_2d_3d_contiguous_rhs",
+        "fwd_2d_3d_in_graph_transpose",
+    ):
+      m = 32
+      k = 32
+      n = 24
+      group_sizes = [4, 0, 4, 8, 0, 4, 8, 4]
+      offs = torch.tensor(group_sizes, dtype=torch.int32).cumsum(
+          0, dtype=torch.int32
+      )
+      a = torch.randn(m, k).to(torch.float8_e4m3fn)
+      if pattern == "fwd_2d_3d":
+        b = torch.randn(e, n, k).transpose(-2, -1).to(torch.float8_e4m3fn)
+        self.assertFalse(b.is_contiguous())
+        b_ref = b
+      elif pattern == "fwd_2d_3d_contiguous_rhs":
+        b = torch.randn(e, k, n).to(torch.float8_e4m3fn).contiguous()
+        self.assertTrue(b.is_contiguous())
+        b_ref = b
+      else:
+        b = torch.randn(e, n, k).to(torch.float8_e4m3fn).contiguous()
+        self.assertTrue(b.is_contiguous())
+        b_ref = b.transpose(-2, -1)
+      scale_a = (torch.rand(m, dtype=torch.float32) + 0.5).contiguous()
+      scale_b = (torch.rand(e, n, dtype=torch.float32) + 0.5).contiguous()
+    else:  # wgrad_2d_2d or wgrad_2d_2d_col_major_lhs
+      t = 32
+      m = 24
+      n = 16
+      group_sizes = [4, 0, 4, 8, 0, 4, 8, 4]
+      offs = torch.tensor(group_sizes, dtype=torch.int32).cumsum(
+          0, dtype=torch.int32
+      )
+      if pattern == "wgrad_2d_2d":
+        a = torch.randn(m, t).to(torch.float8_e4m3fn).contiguous()
+        b = torch.randn(n, t).to(torch.float8_e4m3fn).t()
+        self.assertFalse(b.is_contiguous())
+      else:
+        a = torch.randn(t, m).to(torch.float8_e4m3fn).t()
+        b = torch.randn(t, n).to(torch.float8_e4m3fn).contiguous()
+        self.assertFalse(a.is_contiguous())
+        self.assertTrue(b.is_contiguous())
+      b_ref = b
+      scale_a = (torch.rand(e * m, dtype=torch.float32) + 0.5).contiguous()
+      scale_b = (torch.rand(e * n, dtype=torch.float32) + 0.5).contiguous()
+
+    device = "tpu"
+    a_tpu = a.to(device)
+    b_tpu = b.to(device)
+    sa_tpu = scale_a.to(device)
+    sb_tpu = scale_b.to(device)
+    offs_tpu = offs.to(device)
+
+    def op(x, y, sa, sb, o):
+      y_mm = (
+          y.transpose(-2, -1)
+          if pattern == "fwd_2d_3d_in_graph_transpose"
+          else y
+      )
+      return torch._scaled_grouped_mm(
+          x,
+          y_mm,
+          sa,
+          sb,
+          offs=o,
+          out_dtype=torch.bfloat16,
+          use_fast_accum=True,
+      )
+
+    # 1. Verify Dynamo explain: 1 graph, 0 breaks
+    explanation = torch._dynamo.explain(op)(
+        a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu
+    )
+    self.assertEqual(explanation.graph_count, 1)
+    self.assertEqual(explanation.graph_break_count, 0)
+
+    # 2. Run under torch.compile(backend="tpu", fullgraph=True)
+    compiled_op = torch.compile(op, backend="tpu", fullgraph=True)
+    compile_out = compiled_op(a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu).cpu()
+
+    # Compare with reference
+    expected = self._rowwise_reference(a, b_ref, scale_a, scale_b, offs)
+    self._assert_rowwise_close(compile_out, expected)
+
+    # 3. Run under make_fx + StaticCompiler
+    fx_graph = make_fx(op)(a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu)
+    static_compiler = compile_compiler.StaticCompiler()
+    executable = static_compiler(
+        fx_graph, [a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu]
+    )
+    static_out = executable(a_tpu, b_tpu, sa_tpu, sb_tpu, offs_tpu).cpu()
+    self._assert_rowwise_close(static_out, expected)
+
+  def test_aten_scaled_grouped_mm_meta_override(self):
+    """Tests TPU Meta override for aten._scaled_grouped_mm (symbolic, scan/functionalize, CPU fallback)."""
+    # 1. Non-TPU device keeps upstream meta (rejects contiguous mat2 / int64 offs),
+    # while TPU device accepts both.
+    with fake_tensor.FakeTensorMode():
+      a_cpu = torch.empty((16, 16), dtype=torch.float8_e4m3fn, device="cpu")
+      b_contig_cpu = torch.empty(
+          (2, 16, 16), dtype=torch.float8_e4m3fn, device="cpu"
+      )
+      sa_cpu = torch.empty((16,), dtype=torch.float32, device="cpu")
+      sb_cpu = torch.empty((2, 16), dtype=torch.float32, device="cpu")
+      offs_i64_cpu = torch.empty((2,), dtype=torch.int64, device="cpu")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Upstream meta fallback.
+          RuntimeError, "column major"
+      ):
+        torch._scaled_grouped_mm(
+            a_cpu,
+            b_contig_cpu,
+            sa_cpu,
+            sb_cpu,
+            offs=offs_i64_cpu.int(),
+            out_dtype=torch.bfloat16,
+        )
+      out_tpu = torch._scaled_grouped_mm(
+          a_cpu.to("tpu"),
+          b_contig_cpu.to("tpu"),
+          sa_cpu.to("tpu"),
+          sb_cpu.to("tpu"),
+          offs=offs_i64_cpu.to("tpu"),
+          out_dtype=torch.bfloat16,
+      )
+      self.assertEqual(out_tpu.shape, (16, 16))
+      self.assertEqual(out_tpu.dtype, torch.bfloat16)
+
+    # 2. Symbolic shapes produce 0 guards on M and G.
+    shape_env = symbolic_shapes.ShapeEnv()
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      s_m = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              16, source=torch._dynamo.source.LocalSource("m")
+          ),
+          hint=16,
+      )
+      s_g = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              2, source=torch._dynamo.source.LocalSource("g")
+          ),
+          hint=2,
+      )
+      a_sym = torch.empty((s_m, 16), dtype=torch.float8_e4m3fn, device="tpu")
+      b_sym = torch.empty((s_g, 16, 8), dtype=torch.float8_e4m3fn, device="tpu")
+      sa_sym = torch.empty((s_m,), dtype=torch.float32, device="tpu")
+      sb_sym = torch.empty((s_g, 8), dtype=torch.float32, device="tpu")
+      offs_sym = torch.empty((s_g,), dtype=torch.int32, device="tpu")
+      out_sym = torch._scaled_grouped_mm(
+          a_sym, b_sym, sa_sym, sb_sym, offs=offs_sym, out_dtype=torch.bfloat16
+      )
+      self.assertIsInstance(out_sym.shape[0], torch.SymInt)
+      self.assertEqual(out_sym.shape[1], 8)
+      self.assertEqual(len(shape_env.guards), 0)
+
+    # 3. Functionalize with remove="mutations_and_views" (used by higher_order.scan)
+    # turns transpose(-2, -1) into a contiguous transpose_copy.
+    a, b_t, sa, sb, offs = self._make_rowwise_inputs("2d_3d", [8, 8])
+    b_storage = b_t.transpose(-2, -1).contiguous()
+    device = "tpu"
+    a_tpu = a.to(device)
+    b_storage_tpu = b_storage.to(device)
+    sa_tpu = sa.to(device)
+    sb_tpu = sb.to(device)
+    offs_tpu = offs.to(device)
+
+    def scan_body_fn(x, w_storage, s_a, s_b, o):
+      w = w_storage.transpose(-2, -1)
+      return torch._scaled_grouped_mm(
+          x, w, s_a, s_b, offs=o, out_dtype=torch.bfloat16, use_fast_accum=True
+      )
+
+    functionalized_fn = torch.func.functionalize(
+        scan_body_fn, remove="mutations_and_views"
+    )
+    fx_graph = make_fx(functionalized_fn)(
+        a_tpu, b_storage_tpu, sa_tpu, sb_tpu, offs_tpu
+    )
+    self.assertIn("transpose_copy", fx_graph.code)
+    static_compiler = compile_compiler.StaticCompiler()
+    executable = static_compiler(
+        fx_graph, [a_tpu, b_storage_tpu, sa_tpu, sb_tpu, offs_tpu]
+    )
+    out = executable(a_tpu, b_storage_tpu, sa_tpu, sb_tpu, offs_tpu).cpu()
+    expected = self._rowwise_reference(a, b_t, sa, sb, offs)
+    self._assert_rowwise_close(out, expected)
 
   def test_optimization_barrier_meta_non_contiguous_eager(self):
     x = torch.empty((16, 2, 256, 256), device="meta")

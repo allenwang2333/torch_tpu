@@ -50,6 +50,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -435,21 +436,35 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   const bool transpose_mat2 = UnwrapTransposed3dMat2(mat2_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
 
+  const bool a_is_2d = self_type.getRank() == 2;
+  const bool b_is_2d = mat2_type.getRank() == 2;
+
   // Upcast input tensors to the computation precision (e.g., F32 or BF16)
   // prior to RaggedDot/DotGeneral because CHLO RaggedDot does not natively
   // handle sub-byte types like FP4/MXFP8 or mixed precision without explicit
   // casts, and TPU Mosaic RaggedDot fails to legalize F16 pack_subelements.
+  // Cases 1-3 keep FP8 x FP8 operands: Gmm consumes f8 natively on the MXU.
   const mlir::ElementType comp_dtype = (out_dtype == mlir::ElementType::F16)
                                            ? mlir::ElementType::F32
                                            : out_dtype;
-  self_op = mlir::stablehlo::ConvertElementType(self_op, comp_dtype);
-  mat2_op = mlir::stablehlo::ConvertElementType(mat2_op, comp_dtype);
+  const auto is_f8 = [](mlir::Type t) {
+    return mlir::isa<mlir::Float8E4M3FNType, mlir::Float8E5M2Type>(t);
+  };
+  const bool is_ragged_dot = a_is_2d || b_is_2d;
+  const bool skip_upcast = is_f8(self_type.getElementType()) &&
+                           is_f8(mat2_type.getElementType()) && is_ragged_dot;
+  if (!skip_upcast) {
+    self_op = mlir::stablehlo::ConvertElementType(self_op, comp_dtype);
+    mat2_op = mlir::stablehlo::ConvertElementType(mat2_op, comp_dtype);
+  }
 
-  const bool a_is_2d = self_type.getRank() == 2;
-  const bool b_is_2d = mat2_type.getRank() == 2;
-
-  mlir::chlo::Precision chlo_precision =
-      static_cast<mlir::chlo::Precision>(precision);
+  // Gmm kernel requires DEFAULT precision when consuming native FP8 operands.
+  const mlir::stablehlo::Precision effective_precision =
+      skip_upcast
+          ? mlir::stablehlo::Precision::DEFAULT  // EXPLICIT_PRECISION_OK
+          : precision;
+  const mlir::chlo::Precision chlo_precision =
+      static_cast<mlir::chlo::Precision>(effective_precision);
   auto precision_attr =
       mlir::chlo::PrecisionAttr::get(&self_op.getContext(), chlo_precision);
   auto precision_config = mlir::ArrayAttr::get(
@@ -527,16 +542,17 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> offs_op,
     std::optional<mlir::MlirOp> bias, std::optional<mlir::MlirOp> scale_result,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  auto self_type = GetTensorTypeOrDie(self_op);
-  auto mat2_type = GetTensorTypeOrDie(mat2_op);
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_type,
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
+  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType self_elem_type,
                       ConvertTo<mlir::ElementType>(self_type.getElementType()));
 
   // For sub-byte types like FP4 or MXFP8, computation precision is typically
   // elevated to F32 to preserve accuracy and because XLA does not support
   // sub-byte math directly. Standard floating types (BF16, F32) usually map to
   // themselves.
-  TT_ASSIGN_OR_RETURN(auto comp_dtype, InferComputationDtype(self_elem_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(self_elem_type));
 
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp mm_result,
