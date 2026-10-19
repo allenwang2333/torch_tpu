@@ -41,6 +41,11 @@ constants. TorchTPU handles these symbolic dimensions as follows:
         `128` at or after `S` (`U_1`), the second bucket covers from `U_1 + 1`
         up to the next multiple of `128` (`U_2`), and so on (for example,
         `[lower_bound, 128]`, `[129, 256]`, ...).
+    *   With `num_dynamic_buckets > 1`, a finite `upper_bound` caps the first
+        bucket exactly but is rounded up to the bucket grid in the buckets after
+        it (the next `128k - c`, where `c` is the constant offset of output
+        shapes such as `S + 1`; the overshoot is smaller than `bucket_size`), so
+        that the output layout stays stable across bucket switches.
     *   TorchTPU registers a single range guard across the full span of all
         buckets with Dynamo, so Dynamo only triggers recompilation if the
         dimension grows beyond the overall `upper_bound`.

@@ -55,6 +55,7 @@ class _CaptureDone(Exception):
 def _capture_and_run_slice_pass(
     fn: Callable[..., Any],
     inputs: list[torch.Tensor],
+    bucket_idx: int | None = None,
 ) -> _PassResult:
   """Captures the FX graph via aot_autograd and runs HandleSliceLikeOpsPass.
 
@@ -71,8 +72,14 @@ def _capture_and_run_slice_pass(
     shape_env = torch._guards.detect_fake_mode(example_inputs).shape_env
     num_guards = len(shape_env.guards)
     bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+    if bucket_idx is None:
+      bounds = bm.get_fallback_symbol_bounds()
+    else:
+      bounds = bm.get_bucketed_symbol_bounds([], num_buckets=bucket_idx + 1)[
+          bucket_idx
+      ]
     ctx = graph_transform_context.GraphTransformContext(
-        graph_module, example_inputs, bm.get_fallback_symbol_bounds()
+        graph_module, example_inputs, bounds
     )
     placeholders = list(
         graph_module.graph.find_nodes(op="placeholder", sort=True)
@@ -212,6 +219,24 @@ class HandleSliceLikeOpsPassTest(seed_test_utils.RepeatableTest):
         (torch.ops.aten.cat.default, torch.ops.aten.cat),
     )
 
+  def test_pass_does_not_pad_when_bucket_capacity_exceeds_slice_clamp(
+      self,
+  ) -> None:
+    buf = torch.ones(4, 200)
+    x = torch.ones(4, 16)
+    torch._dynamo.mark_static(buf)
+    torch._dynamo.mark_dynamic(x, 1)
+
+    result = _capture_and_run_slice_pass(
+        lambda b_in, x_in: b_in[:, x_in.shape[1] : x_in.shape[1] + 1] * 2.0,
+        [buf, x],
+        bucket_idx=1,
+    )
+
+    slice_node = self._assert_single_dynamic_slice(result)
+    sliced_input = slice_node.args[0]
+    self.assertEqual(sliced_input.op, "placeholder")
+
   def test_pass_adds_no_guards_for_1d_tail_slice(self) -> None:
     # cache_position[-q_len:] with independent kv/q symbols: at head the pass
     # evaluated `out_size == in_size` through the ShapeEnv and installed a
@@ -304,6 +329,38 @@ class HandleSliceLikeOpsPassTest(seed_test_utils.RepeatableTest):
       )
     self.assertIsInstance(cm.exception.inner_exception, NotImplementedError)
     self.assertIn("dynamic start", str(cm.exception.inner_exception))
+
+  def test_pass_slice_backward_bounds_window_by_runtime_range(self) -> None:
+    # Gradient of a static [4, 300] input sliced by a dynamic end with range
+    # [2, 200]: bucket 1's capacity (256) overshoots the range, so the window
+    # must end at the runtime upper bound (200) and slice_backward must get a
+    # static [4, 200] gradient (zeros past the runtime size) while the static
+    # input sizes stay unchanged.
+    g = torch.ones(4, 16)
+    torch._dynamo.mark_static(g, 0)
+    torch._dynamo.mark_dynamic(g, 1, min=2, max=200)
+
+    result = _capture_and_run_slice_pass(
+        lambda g_in: torch.ops.aten.slice_backward(
+            g_in, [4, 300], 1, 0, g_in.shape[1], 1
+        ),
+        [g],
+        bucket_idx=1,
+    )
+
+    self.assertEmpty(result.new_guards)
+    bwd_nodes = list(
+        result.gm.graph.find_nodes(
+            op="call_function", target=torch.ops.aten.slice_backward.default
+        )
+    )
+    self.assertLen(bwd_nodes, 1)
+    grad, input_sizes, dim, start, end, step = bwd_nodes[0].args
+    self.assertEqual(list(input_sizes), [4, 300])
+    self.assertEqual((dim, start, end, step), (1, 0, 200, 1))
+    self.assertEqual(grad.target, torch.ops.aten.slice.Tensor)
+    self.assertEqual(tuple(grad.meta["val"].shape), (4, 200))
+    self.assertEqual(grad.args[0].target, torch.ops.aten.where.self)
 
   def test_pass_rejects_negative_pads_on_dynamic_tensor(self) -> None:
     # The C++ constant_pad_nd builder sizes its blocks from the static shape,
