@@ -234,6 +234,7 @@ torch_tpu_py_test(
     name = "wheel_single_source_test",
     srcs = ["wheel_single_source_test.py"],
     data = [
+        "//:README.md",
         "//:pyproject.toml",
     ],
     env = select({
