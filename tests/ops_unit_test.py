@@ -14460,16 +14460,14 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32).reshape(3, 4)
     size = torch.tensor(3, device=device, dtype=torch.int32)
+    # Target shape: physical [12], logical [9] (dim 0 is dynamic)
+    shape = [torch.tensor(9, device=device, dtype=torch.int32)]
+    static_shape = [12]
+    is_dynamic = [True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [3, 4], logical [3, 3] (dim 1 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 1, size)
-
-      # Target shape: physical [12], logical [9] (dim 0 is dynamic)
-      shape = [torch.tensor(9, device=device, dtype=torch.int32)]
-      static_shape = [12]
-      is_dynamic = [True]
-
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )
@@ -14488,19 +14486,17 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32).reshape(3, 4)
     size = torch.tensor(2, device=device, dtype=torch.int32)
+    # Target shape: physical [2, 6], logical [2, 3] (dim 1 is dynamic)
+    shape = [
+        torch.tensor(2, device=device, dtype=torch.int32),
+        torch.tensor(3, device=device, dtype=torch.int32),
+    ]
+    static_shape = [2, 6]
+    is_dynamic = [False, True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [3, 4], logical [3, 2] (dim 1 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 1, size)
-
-      # Target shape: physical [2, 6], logical [2, 3] (dim 1 is dynamic)
-      shape = [
-          torch.tensor(2, device=device, dtype=torch.int32),
-          torch.tensor(3, device=device, dtype=torch.int32),
-      ]
-      static_shape = [2, 6]
-      is_dynamic = [False, True]
-
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )
@@ -14519,20 +14515,19 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32).reshape(3, 4)
     size = torch.tensor(2, device=device, dtype=torch.int32)
+    # Target shape: physical [1, 3, 1, 4], logical [1, 3, 1, 2]
+    shape = [
+        torch.tensor(1, device=device, dtype=torch.int32),
+        torch.tensor(3, device=device, dtype=torch.int32),
+        torch.tensor(1, device=device, dtype=torch.int32),
+        torch.tensor(2, device=device, dtype=torch.int32),
+    ]
+    static_shape = [1, 3, 1, 4]
+    is_dynamic = [False, False, False, True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [3, 4], logical [3, 2] (dim 1 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 1, size)
-
-      # Target shape: physical [1, 3, 1, 4], logical [1, 3, 1, 2]
-      shape = [
-          torch.tensor(1, device=device, dtype=torch.int32),
-          torch.tensor(3, device=device, dtype=torch.int32),
-          torch.tensor(1, device=device, dtype=torch.int32),
-          torch.tensor(2, device=device, dtype=torch.int32),
-      ]
-      static_shape = [1, 3, 1, 4]
-      is_dynamic = [False, False, False, True]
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )
@@ -14551,19 +14546,17 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32)
     size = torch.tensor(8, device=device, dtype=torch.int32)
+    # Target shape: physical [2, 6], logical [2, 4] (dim 1 is dynamic)
+    shape = [
+        torch.tensor(2, device=device, dtype=torch.int32),
+        torch.tensor(4, device=device, dtype=torch.int32),
+    ]
+    static_shape = [2, 6]
+    is_dynamic = [False, True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [12], logical [8] (dim 0 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 0, size)
-
-      # Target shape: physical [2, 6], logical [2, 4] (dim 1 is dynamic)
-      shape = [
-          torch.tensor(2, device=device, dtype=torch.int32),
-          torch.tensor(4, device=device, dtype=torch.int32),
-      ]
-      static_shape = [2, 6]
-      is_dynamic = [False, True]
-
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )
@@ -14579,19 +14572,17 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32).reshape(3, 4)
     size = torch.tensor(2, device=device, dtype=torch.int32)
+    # Target shape: physical [2, 6], logical [2, 4] (dim 1 is dynamic)
+    shape = [
+        torch.tensor(2, device=device, dtype=torch.int32),
+        torch.tensor(4, device=device, dtype=torch.int32),
+    ]
+    static_shape = [2, 6]
+    is_dynamic = [False, True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [3, 4], logical [2, 4] (dim 0 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 0, size)
-
-      # Target shape: physical [2, 6], logical [2, 4] (dim 1 is dynamic)
-      shape = [
-          torch.tensor(2, device=device, dtype=torch.int32),
-          torch.tensor(4, device=device, dtype=torch.int32),
-      ]
-      static_shape = [2, 6]
-      is_dynamic = [False, True]
-
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )
@@ -14610,20 +14601,18 @@ module {
     device = torch.device("tpu")
     x = torch.arange(12, device=device, dtype=torch.float32).reshape(2, 6)
     size = torch.tensor(4, device=device, dtype=torch.int32)
+    # Target shape: physical [2, 2, 3], logical [2, 2, 2] (dim 2 is dynamic)
+    shape = [
+        torch.tensor(2, device=device, dtype=torch.int32),
+        torch.tensor(2, device=device, dtype=torch.int32),
+        torch.tensor(2, device=device, dtype=torch.int32),
+    ]
+    static_shape = [2, 2, 3]
+    is_dynamic = [False, False, True]
 
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       # Make input dynamic: physical [2, 6], logical [2, 4] (dim 1 is dynamic)
       x_dynamic = torch.ops.tpu._set_dimension_logical_size(x, 1, size)
-
-      # Target shape: physical [2, 2, 3], logical [2, 2, 2] (dim 2 is dynamic)
-      shape = [
-          torch.tensor(2, device=device, dtype=torch.int32),
-          torch.tensor(2, device=device, dtype=torch.int32),
-          torch.tensor(2, device=device, dtype=torch.int32),
-      ]
-      static_shape = [2, 2, 3]
-      is_dynamic = [False, False, True]
-
       out = torch.ops.tpu._dynamic_reshape(
           x_dynamic, shape, static_shape, is_dynamic
       )

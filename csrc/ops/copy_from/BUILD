@@ -94,6 +94,8 @@ torch_tpu_cc_library(
         "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
+        "//csrc/eager:materialize",
+        "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",

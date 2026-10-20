@@ -28,7 +28,7 @@ TEST(GetTransferSyncModeTest, DeferNever) {
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
             TransferSyncMode::kEagerNonBlocking);
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
-            TransferSyncMode::kIsolated);
+            TransferSyncMode::kEagerBlocking);
 }
 
 TEST(GetTransferSyncModeTest, DeferAndFuse) {
@@ -36,7 +36,7 @@ TEST(GetTransferSyncModeTest, DeferAndFuse) {
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
             TransferSyncMode::kEagerNonBlocking);
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
-            TransferSyncMode::kIsolated);
+            TransferSyncMode::kEagerBlocking);
 }
 
 TEST(GetTransferSyncModeTest, InternalDeferAll) {
@@ -44,7 +44,7 @@ TEST(GetTransferSyncModeTest, InternalDeferAll) {
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
             TransferSyncMode::kEagerNonBlocking);
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
-            TransferSyncMode::kIsolated);
+            TransferSyncMode::kEagerBlocking);
 }
 
 TEST(GetTransferSyncModeTest, InternalCompileFxGraph) {
@@ -58,11 +58,11 @@ TEST(GetTransferSyncModeTest, InternalCompileFxGraph) {
 
 TEST(GetTransferSyncModeTest, DeferNeverAndLaunchBlocking) {
   SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-  // Launch blocking overrides non_blocking to kIsolated.
+  // Launch blocking overrides non_blocking to kEagerBlocking.
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
-            TransferSyncMode::kIsolated);
+            TransferSyncMode::kEagerBlocking);
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
-            TransferSyncMode::kIsolated);
+            TransferSyncMode::kEagerBlocking);
 }
 
 }  // namespace

@@ -969,11 +969,16 @@ void WaitForPendingAssertionChecks() {
   }
 }
 
-void SyncAndCheckStickyError() {
+absl::Status SyncAndReturnStickyError() {
   WaitForPendingAssertionChecks();
   if (ABSL_PREDICT_FALSE(HasStickyError())) {
-    TT_THROW_IF_ERROR(GetStickyError());
+    return GetStickyError();
   }
+  return absl::OkStatus();
+}
+
+void SyncAndCheckStickyError() {
+  TT_THROW_IF_ERROR(SyncAndReturnStickyError());
 }
 
 void ClearStickyError() {

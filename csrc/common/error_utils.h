@@ -207,6 +207,10 @@ void WaitForPendingAssertionChecks();
 // throws a C++ exception if any sticky error has been recorded.
 void SyncAndCheckStickyError();
 
+// Blocks until all pending asynchronous assertion checks have completed, and
+// returns the error status if any was recorded.
+absl::Status SyncAndReturnStickyError();
+
 // Adapts an external error from OpenXLA to comply to TorchTPU error guidelines.
 //
 // If `status` is OK, returns it unchanged.

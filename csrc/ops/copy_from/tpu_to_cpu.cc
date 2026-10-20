@@ -17,8 +17,10 @@
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -142,24 +144,50 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=unreachable from Python
       dest_ptr != nullptr, error::kInvalidArgument)
       << "cannot copy a nonzero amount of data to a null pointer";
-  const MaterializationBlockMode block_mode =
-      (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking)
-          ? MaterializationBlockMode::kNonBlocking
-          : MaterializationBlockMode::kBlockUntilStarted;
-  {
-    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
+  TT_RET_CHECK(!src_buffer_ref.is_placeholder(), error::kInternal)
+      << "cannot Materialize() a placeholder tensor or a tensor that "
+         "depends on a placeholder. \nPlaceholder tensors should only "
+         "appear in compiled mode, which should never try to "
+         "materialize tensors";
+
+  if (transfer_sync_mode == TransferSyncMode::kIsolated) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
+        src_buffer_ref.is_materializing(), error::kFailedPrecondition)
+        << "cannot materialize a tensor during a stream-isolated copy, "
+           "materialization requires an active stream";
+    xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
+    return future.Await();
+  }
+
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
+    // Start a background materialization of src_buffer_ref (unless it's already
+    // started), then start a non-blocking copy and record it on the stream.
     TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
         Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph, block_mode),
+                    GraphSplitMode::kSplitGraph,
+                    MaterializationBlockMode::kNonBlocking),
         ConvertTo<at::ScalarType>(src_buffer_ref.element_type()),
         src_buffer_ref.dimensions()));
-  }
-  xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
-  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
+    xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
     RecordAsyncDeviceToHost(std::move(future));
     return absl::OkStatus();
   }
-  return future.Await();
+
+  // In eager blocking mode, start a full stream materialization (ensuring that
+  // the copied buffer will be materialized), and then block until the event
+  // snapshot is complete. This will await both the materialization and the
+  // copy.
+  xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
+  RecordAsyncDeviceToHost(std::move(future));
+  std::vector<SharedDeviceBufferList> must_materialize = {
+      src_buffer_ref.device_buffer_list()};
+  xla::Future<std::shared_ptr<EventSnapshot>> snapshot_future =
+      MaterializeCurrentStream(MaterializationReason::kCpuTransfer,
+                               GraphSplitMode::kSplitGraph, must_materialize);
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<EventSnapshot> snapshot,
+                      snapshot_future.Await());
+  TT_RETURN_IF_ERROR(snapshot->Synchronize());
+  return SyncAndReturnStickyError();
 }
 
 // Materializes the base buffer of src, and copies it byte-for-byte into dest's
@@ -198,6 +226,11 @@ absl::Status CopyTpuToCpuWithTpuConversion(
   if (!src_base_buf.is_materializing() &&
       (src_base_buf.device_index() != curr_device_index ||
        src_base_buf.stream_id() != curr_stream_id)) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
+        transfer_sync_mode != TransferSyncMode::kIsolated,
+        error::kFailedPrecondition)
+        << "cannot materialize a tensor during a stream-isolated copy, "
+           "materialization requires an active stream";
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
     TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
         Materialize(src_base_buf, MaterializationReason::kCpuTransfer,
@@ -269,7 +302,7 @@ absl::Status CopyTpuToCpuWithCpuConversion(
   // while it is still being used.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(src));
   if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
-    transfer_sync_mode = TransferSyncMode::kIsolated;
+    transfer_sync_mode = TransferSyncMode::kEagerBlocking;
   }
   TT_ASSIGN_OR_RETURN(at::Tensor cpu_temp, CopyDeviceBufferRefToCpuTensor(
                                                base_buf, transfer_sync_mode));

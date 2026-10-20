@@ -129,7 +129,8 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu=re.compile(
-            r".*INVALID_ARGUMENT: Buffer has been deleted or donated.*",
+            r"to_copy\(\): cannot start a device to host copy from a donated or"
+            r" deleted buffer",
             re.DOTALL,
         ),
     ):

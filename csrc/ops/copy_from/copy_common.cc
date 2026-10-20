@@ -121,12 +121,14 @@ absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest) {
 
 TransferSyncMode GetTransferSyncMode(bool non_blocking) {
   const EagerMode eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph ||
-      eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
+  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
     return TransferSyncMode::kIsolated;
   }
+  if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
+    return TransferSyncMode::kEagerBlocking;
+  }
   return non_blocking ? TransferSyncMode::kEagerNonBlocking
-                      : TransferSyncMode::kIsolated;
+                      : TransferSyncMode::kEagerBlocking;
 }
 
 }  // namespace torch_tpu

@@ -224,6 +224,12 @@ void StartD2H(absl::Status materialization_status,
     promise.Set(buffer_or.status());
     return;
   }
+  if ((*buffer_or)->IsDeleted()) {
+    promise.Set(TT_ERROR(error::kUnavailable)
+                << "cannot start a device to host copy from a donated or "
+                   "deleted buffer");
+    return;
+  }
   // Materialization succeeded.
   // If we are copying FP4 data, we will copy to the temporary fp4_receiver
   // buffer; otherwise, we will copy directly to the destination pointer.

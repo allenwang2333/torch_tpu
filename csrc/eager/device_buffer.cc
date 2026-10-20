@@ -73,6 +73,10 @@ DeviceBufferList::Data::Data(bool placeholder)
     auto [promise, future] = xla::MakePromise<void>();
     materialization_promise_ = std::move(promise);
     materialization_future_ = std::move(future);
+  } else {
+    materialization_future_ =
+        xla::Future<>(TT_ERROR(error::kFailedPrecondition)
+                      << "placeholders cannot be materialized");
   }
 }
 
@@ -153,7 +157,8 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());
 
   const bool already_started = materialization_started_.exchange(true);
-  TT_RET_CHECK(!already_started, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=unreachable from Python
+      !already_started, error::kFailedPrecondition)
       << "attempted to set materialized buffers after materialization was "
          "already started";
 

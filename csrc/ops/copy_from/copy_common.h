@@ -32,6 +32,10 @@ absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest);
 
 // The synchronization mode of a host-to-device or device-to-host copy.
 enum class TransferSyncMode {
+  // The copy operation is recorded on the current stream, and then the current
+  // stream is synchronized, blocking until the copy completes.
+  // Any errors on the stream are reported, even if the transfer succeeds.
+  kEagerBlocking,
   // The copy operation is recorded on the current stream, and then the call
   // returns immediately. Errors will be reported in the future when the stream
   // is synchronized or queried.
@@ -45,11 +49,14 @@ enum class TransferSyncMode {
 // Returns the synchronization mode of a host-to-device or device-to-host copy
 // based on the user-requested non-blocking mode and the current eager mode.
 //
-// If the eager mode is kInternalCompileFxGraph or kDeferNeverAndLaunchBlocking,
-// the transfer will be kIsolated, regardless of the value of `non_blocking`.
+// If the eager mode is kInternalCompileFxGraph, the transfer will be
+// kIsolated, regardless of the value of `non_blocking`.
+//
+// If the eager mode is kDeferNeverAndLaunchBlocking, the transfer will be
+// kEagerBlocking, regardless of the value of `non_blocking`.
 //
 // Otherwise, non_blocking will determine whether kEagerNonBlocking or
-// kIsolated is used.
+// kEagerBlocking is used.
 TransferSyncMode GetTransferSyncMode(bool non_blocking);
 
 }  // namespace torch_tpu
