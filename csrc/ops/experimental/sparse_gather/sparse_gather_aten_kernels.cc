@@ -44,11 +44,13 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/ValueRange.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function_hook.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -56,8 +58,7 @@ namespace torch_tpu {
 namespace {
 
 auto SparseGatherBuilder(int64_t max_non_zeroes_per_row) {
-  return [max_non_zeroes_per_row](
-             torch_tpu::FixedSizeSpan<mlir::MlirOp, 3> inputs)
+  return [max_non_zeroes_per_row](FixedSizeSpan<mlir::MlirOp, 3> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp row_pointers = inputs[0];
     mlir::MlirOp indices = inputs[1];
@@ -87,8 +88,8 @@ auto SparseGatherBuilder(int64_t max_non_zeroes_per_row) {
             &builder.getContext(),
             mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL));
 
-    auto operand_type = torch_tpu::GetTensorTypeOrDie(operand);
-    auto indices_type = torch_tpu::GetTensorTypeOrDie(indices);
+    auto operand_type = GetTensorTypeOrDie(operand);
+    auto indices_type = GetTensorTypeOrDie(indices);
     int64_t num_gathered_elements = indices_type.getShape()[0];
     int64_t embedding_dim = operand_type.getShape()[1];
 
@@ -108,15 +109,15 @@ auto SparseGatherBuilder(int64_t max_non_zeroes_per_row) {
 }
 
 auto SparseGatherBackwardBuilder() {
-  return [](torch_tpu::FixedSizeSpan<mlir::MlirOp, 3> inputs)
+  return [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp grad_output = inputs[0];
     mlir::MlirOp indices = inputs[1];
     mlir::MlirOp grad_operand = inputs[2];
     mlir::MlirBuilder& builder = grad_output.getBuilder();
 
-    auto grad_operand_type = torch_tpu::GetTensorTypeOrDie(grad_operand);
-    auto indices_type = torch_tpu::GetTensorTypeOrDie(indices);
+    auto grad_operand_type = GetTensorTypeOrDie(grad_operand);
+    auto indices_type = GetTensorTypeOrDie(indices);
 
     int64_t v = grad_operand_type.getShape()[0];
     mlir::Type index_elem_type = indices_type.getElementType();
@@ -247,61 +248,58 @@ at::Tensor AtenSparseGather(const at::Tensor& row_pointers,
                             const at::Tensor& operand,
                             int64_t max_non_zeroes_per_row) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseGather, param_keys,
+      OpName::kSparseGather, param_keys,
       (row_pointers, indices, operand, max_non_zeroes_per_row), {
         TT_THROW_IF_ERROR(ValidateSparseGatherInputs(
             row_pointers, indices, operand, max_non_zeroes_per_row));
 
-        std::array<torch_tpu::TensorHolder, 3> inputs = {row_pointers, indices,
-                                                         operand};
+        std::array<TensorHolder, 3> inputs = {row_pointers, indices, operand};
 
-        torch_tpu::Dimensions out_dims = {indices.size(0), operand.size(1)};
+        Dimensions out_dims = {indices.size(0), operand.size(1)};
 
         auto builder_fn = SparseGatherBuilder(max_non_zeroes_per_row);
 
-        TT_ASSIGN_OR_THROW(
-            mlir::ElementType out_dtype,
-            torch_tpu::ConvertTo<mlir::ElementType>(operand.scalar_type()));
+        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(operand.scalar_type()));
 
         TT_ASSIGN_OR_THROW(
-            auto results, (torch_tpu::DispatchOp<3, 1>(
-                              builder_fn, inputs,
+            auto results,
+            (DispatchOp<3, 1>(builder_fn, inputs,
                               {.out_dtype = out_dtype,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(param_keys)})));
-        return torch_tpu::MakeTensor(results);
+        return MakeTensor(results);
       });
 }
 
 at::Tensor AtenSparseGatherBackward(const at::Tensor& grad_output,
                                     const at::Tensor& indices,
                                     const at::Tensor& grad_operand) {
-  TT_KERNEL(torch_tpu::OpName::kSparseGatherBackward, param_keys,
-            (grad_output, indices, grad_operand), {
-              TT_THROW_IF_ERROR(ValidateSparseGatherBackwardInputs(
-                  grad_output, indices, grad_operand));
+  TT_KERNEL(
+      OpName::kSparseGatherBackward, param_keys,
+      (grad_output, indices, grad_operand), {
+        TT_THROW_IF_ERROR(ValidateSparseGatherBackwardInputs(
+            grad_output, indices, grad_operand));
 
-              std::array<torch_tpu::TensorHolder, 3> inputs = {
-                  grad_output, indices, grad_operand};
+        std::array<TensorHolder, 3> inputs = {grad_output, indices,
+                                              grad_operand};
 
-              torch_tpu::Dimensions out_dims = {grad_operand.size(0),
-                                                grad_operand.size(1)};
+        Dimensions out_dims = {grad_operand.size(0), grad_operand.size(1)};
 
-              auto builder_fn = SparseGatherBackwardBuilder();
+        auto builder_fn = SparseGatherBackwardBuilder();
 
-              TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                                 torch_tpu::ConvertTo<mlir::ElementType>(
-                                     grad_operand.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            mlir::ElementType out_dtype,
+            ConvertTo<mlir::ElementType>(grad_operand.scalar_type()));
 
-              TT_ASSIGN_OR_THROW(
-                  auto results,
-                  (torch_tpu::DispatchOp<3, 1>(
-                      builder_fn, inputs,
-                      {.out_dtype = out_dtype,
-                       .out_dims = out_dims,
-                       .op_param_cache_keys = std::move(param_keys)})));
-              return torch_tpu::MakeTensor(results);
-            });
+        TT_ASSIGN_OR_THROW(
+            auto results,
+            (DispatchOp<3, 1>(builder_fn, inputs,
+                              {.out_dtype = out_dtype,
+                               .out_dims = out_dims,
+                               .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(results);
+      });
 }
 
 // Autograd implementation for torch.ops.tpu._sparse_gather.
