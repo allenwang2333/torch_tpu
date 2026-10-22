@@ -2908,4 +2908,33 @@ torch_tpu_py_test(
     ],
 )
 
+# THROWAWAY spike for running error_coverage_test in OSS. DO NOT MERGE.
+torch_tpu_py_test(
+    name = "error_coverage_spike_test",
+    timeout = "long",
+    srcs = [
+        "error_coverage_spike_lib.py",
+        "error_coverage_spike_test.py",
+    ],
+    data = [
+        "error_coverage_spike_data.yaml",
+        ":errors_test_cov",
+        ":tpu_errors_test_cov",
+        "//csrc:all_cpp_files_recursive",
+        "//tests/distributed:collective_errors_test_cov",
+    ],
+    main = "error_coverage_spike_test.py",
+    tags = [
+        "exclusive",
+        "nosan",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":repo_paths",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "@pypi//pyyaml",
+    ],
+)
+
 torch_tpu_package_end()
