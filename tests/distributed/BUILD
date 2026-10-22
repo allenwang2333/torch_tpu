@@ -660,6 +660,7 @@ torch_tpu_py_test(
     name = "mixed_group_programs_test",
     timeout = "long",
     srcs = ["mixed_group_programs_test.py"],
+    nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
@@ -676,13 +677,12 @@ torch_tpu_py_test(
         "requires-tpu-v7x:4",
     ],
     deps = [
-        ":distributed_utils",
+        ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
     ],
 )
 
