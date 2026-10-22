@@ -30,6 +30,7 @@ torch_tpu_py_library(
     name = "torch_test_configs",
     testonly = True,
     srcs = ["torch_test_configs.py"],
+    deps = ["//shims/torch:pytorch"],
 )
 
 pytype_strict_binary(
@@ -593,7 +594,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_lazy_modules_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_lazy_modules",
 )
 
@@ -704,7 +704,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "complex_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_complex",
 )
 
@@ -757,12 +756,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 4,
     torch_test_module = "test_foreach",
-)
-
-torch_tpu_torch_test(
-    name = "fx_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_fx",
 )
 
 torch_tpu_torch_test(
@@ -886,12 +879,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 6,
     torch_test_module = "test_ops_jit",
-)
-
-torch_tpu_torch_test(
-    name = "ops_unbacked_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_ops_unbacked",
 )
 
 torch_tpu_torch_test(

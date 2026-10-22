@@ -19,14 +19,22 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Any, Final
+
+import torch
 
 # Generic test classes or methods excluded from instantiation for TPU.
 #
 # Keyed by test module, tests are identified by their generic class and method
 # names, e.g. `TestOps` instead of `TestOpsTPU`. In this way, one entry covers
-# all instantiated variants of a test. Use "*" to exclude a whole class.
-TEST_EXCLUSIONS: Final[Mapping[str, Mapping[str, str | Sequence[str]]]] = {
+# all instantiated variants of a test. Use "*" to exclude a whole class, or map
+# a method to `{"dtypes": [...]}` to exclude only the listed dtype variants.
+#
+# Complex dtype variants are excluded for every test by the test runner and do
+# not need entries here.
+TEST_EXCLUSIONS: Final[
+    Mapping[str, Mapping[str, str | Sequence[str] | Mapping[str, Any]]]
+] = {
     # TODO(b/573758862): track per-test exclusion reasons and triage.
     # go/keep-sorted start block=yes
     "distributed/fsdp/test_utils": {
@@ -59,6 +67,12 @@ TEST_EXCLUSIONS: Final[Mapping[str, Mapping[str, str | Sequence[str]]]] = {
             "test_functionalized_copy_chain_compile",
             "test_nested_region_output_fusibility",
         ],
+    },
+    "test_complex": {
+        "TestComplexTensor": {
+            # Infers complex32 from a Python complex under float16 default dtype.
+            "test_dtype_inference": {"dtypes": [torch.float16]},
+        },
     },
     "test_custom_ops": {
         "TestCustomOpTesting": [
