@@ -27,6 +27,22 @@ For anything more complicated than trivial fixes, please open an issue first
 before writing code, to allow for discussion about the right shape of the
 solution and to make the issue discoverable and prevent duplicate work.
 
+### Claiming an Issue
+
+To help avoid duplicate work, please follow these conventions before starting
+on an existing issue:
+
+*   **Check for existing work**: Read the issue's comments and look for linked
+    pull requests. If someone has said they are working on it, or a pull request
+    already references it, the issue is likely taken.
+*   **Comment before you start**: Leave a comment on the issue saying that you
+    would like to work on it. A maintainer may then assign the issue to you.
+*   **Assignees**: An issue's assignee is usually the maintainer responsible for
+    it, which does not necessarily mean they are writing a fix. Your comment
+    lets them confirm whether the issue is free to pick up.
+*   **Overlapping fixes**: If several fixes for the same issue are proposed
+    anyway, maintainers may choose the one that best addresses the issue.
+
 ### What Makes a Great Bug Report
 
 If you run into a bug or crash, please include:
@@ -194,7 +210,8 @@ A constructive review process relies on mutual respect for time and attention.
 *   **Small, focused PRs**: Submit pull requests that do one thing well. A
     concise 100-line diff gets reviewed far faster than a 1,000-line rewrite.
 *   **Clear context**: Explain what your change does and why it is needed. Link
-    to the relevant GitHub issue.
+    to the relevant GitHub issue (e.g., `Fixes #1234`); this is required for
+    all non-trivial PRs.
 *   **Shepherd your change**: Keep an eye on CI checks, address reviewer notes,
     and let us know if you get blocked or need to step away.
 
