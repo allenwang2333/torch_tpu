@@ -16,6 +16,7 @@
 
 #include "csrc/eager/tensor_to_buffer.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -287,6 +288,42 @@ TEST(TensorToBufferTest, GetBuffersDonatedAliased) {
   ASSERT_EQ(read2_deferred_op->inputs().size(), 1);
   EXPECT_EQ(read2_deferred_op->inputs()[0], base_buffer);
   EXPECT_THAT(read2_deferred_op->donated_indices(), testing::ElementsAre(0));
+}
+
+TEST(TensorToBufferTest, AssignBufferToAtTensorBumpVersion) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  constexpr auto f32_type = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(auto buf0,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(auto buf1,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(auto buf2,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor tensor = MakeTensor(buf0);
+  uint32_t initial_version =
+      tensor.unsafeGetTensorImpl()->version_counter().current_version();
+
+  // By default (bump_version = true), assigning a buffer bumps the version.
+  ASSERT_OK(AssignBufferToAtTensor(buf1, tensor));
+  TT_ASSERT_OK_AND_ASSIGN(auto read_buf1, GetBuffer(tensor));
+  EXPECT_EQ(read_buf1, buf1);
+  EXPECT_EQ(tensor.unsafeGetTensorImpl()->version_counter().current_version(),
+            initial_version + 1);
+
+  // With bump_version = false, the buffer is updated without bumping the
+  // version counter.
+  ASSERT_OK(AssignBufferToAtTensor(buf2, tensor,
+                                   /*enable_autodonation=*/false,
+                                   /*bump_version=*/false));
+  TT_ASSERT_OK_AND_ASSIGN(auto read_buf2, GetBuffer(tensor));
+  EXPECT_EQ(read_buf2, buf2);
+  EXPECT_EQ(tensor.unsafeGetTensorImpl()->version_counter().current_version(),
+            initial_version + 1);
 }
 
 }  // namespace
