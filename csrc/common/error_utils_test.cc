@@ -1653,5 +1653,59 @@ TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceReturnsValueWhenSet) {
   EXPECT_EQ(val, 8);
 }
 
+TEST(AdaptExternalErrorMessage, LowercasesOrdinaryCapitalizedWord) {
+  EXPECT_EQ(AdaptExternalErrorMessage("Dimension size negative."),
+            "dimension size negative");
+  EXPECT_EQ(AdaptExternalErrorMessage("  Failed to compile module.  "),
+            "failed to compile module");
+}
+
+TEST(AdaptExternalErrorMessage, KeepsAcronymsAndStatusCodes) {
+  // libtpu / gRPC messages routinely start with acronyms or status codes;
+  // lowercasing only the first letter would produce "tPU", "gRPC_ERROR".
+  EXPECT_EQ(AdaptExternalErrorMessage(
+                "TPU initialization failed: GRPC_ERROR error message: "
+                "START_SESSION failed."),
+            "TPU initialization failed: GRPC_ERROR error message: "
+            "START_SESSION failed");
+  EXPECT_EQ(AdaptExternalErrorMessage("RESOURCE_EXHAUSTED: out of memory"),
+            "RESOURCE_EXHAUSTED: out of memory");
+  EXPECT_EQ(AdaptExternalErrorMessage("HBM allocation failed"),
+            "HBM allocation failed");
+}
+
+TEST(AdaptExternalErrorMessage, KeepsMixedCaseNames) {
+  EXPECT_EQ(AdaptExternalErrorMessage("PjRtClient is not initialized"),
+            "PjRtClient is not initialized");
+  EXPECT_EQ(AdaptExternalErrorMessage("TorchTPU does not support this op"),
+            "TorchTPU does not support this op");
+  EXPECT_EQ(AdaptExternalErrorMessage("XLA compilation failed"),
+            "XLA compilation failed");
+}
+
+TEST(AdaptExternalErrorMessage, LeavesLowercaseAndNonLetterStartsAlone) {
+  EXPECT_EQ(AdaptExternalErrorMessage("expected 2 inputs, got 1"),
+            "expected 2 inputs, got 1");
+  EXPECT_EQ(AdaptExternalErrorMessage("1D tensor is not supported"),
+            "1D tensor is not supported");
+  EXPECT_EQ(AdaptExternalErrorMessage(""), "");
+}
+
+TEST(AdaptXlaError, PreservesAcronymAtStartOfRuntimeMessage) {
+  // Mimics a libtpu runtime failure: an absl::Status built outside torch_tpu,
+  // so its message does not follow TorchTPU formatting.
+  const absl::Status adapted =
+      AdaptXlaError(absl::Status(error::kInternal,
+                                 "TPU initialization failed: GRPC_ERROR error "
+                                 "message: START_SESSION failed."),
+                    /* context= */ "failed to retrieve the PjRt client");
+  EXPECT_EQ(adapted.code(), error::kInternal);
+  EXPECT_EQ(
+      adapted.message(),
+      absl::StrCat("failed to retrieve the PjRt client", kXlaCompilerFailedWith,
+                   "TPU initialization failed: GRPC_ERROR error "
+                   "message: START_SESSION failed"));
+}
+
 }  // namespace
 }  // namespace torch_tpu

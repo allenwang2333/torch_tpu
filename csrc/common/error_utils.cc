@@ -87,6 +87,25 @@ constexpr std::array<std::string_view, 3> kAllowedStartingWords{"TorchTPU",
       [&](const std::string_view word) { return message.starts_with(word); });
 }
 
+// Returns true if `message` starts with an ordinary capitalized word: an
+// uppercase letter followed by one or more lowercase letters, e.g. "Dimension"
+// or "Failed". Acronyms and status codes ("TPU", "GRPC_ERROR",
+// "RESOURCE_EXHAUSTED") and mixed-case names ("PjRt", "TorchTPU") are not.
+[[nodiscard]] bool StartsWithOrdinaryCapitalizedWord(
+    const std::string_view message) {
+  if (message.empty() || !absl::ascii_isupper(message.front())) {
+    return false;
+  }
+  const size_t word_end = std::distance(
+      message.begin(), absl::c_find_if_not(message, [](const unsigned char c) {
+        return absl::ascii_isalnum(c) || c == '_';
+      }));
+  const std::string_view rest = message.substr(1, word_end - 1);
+  return !rest.empty() && absl::c_all_of(rest, [](const unsigned char c) {
+    return absl::ascii_islower(c);
+  });
+}
+
 #if TT_CHECKS_ERROR_FORMAT
 
 // Pair of corresponding type names.
@@ -792,9 +811,11 @@ std::string AdaptExternalErrorMessage(const std::string_view message) {
   }
 
   // Check: error messages should start with a lowercase character.
-  // We skip lowercasing if the message starts with specific allowed words.
-  if (!StartsWithAllowedWord(new_message) &&
-      absl::ascii_isupper(new_message[0])) {
+  // Only an ordinary capitalized word is lowercased ("Dimension" ->
+  // "dimension"); acronyms, status codes and mixed-case names keep their
+  // case, since external runtimes commonly start messages with them ("TPU
+  // initialization failed", "GRPC_ERROR", "PjRt").
+  if (StartsWithOrdinaryCapitalizedWord(new_message)) {
     new_message[0] = absl::ascii_tolower(new_message[0]);
   }
 
