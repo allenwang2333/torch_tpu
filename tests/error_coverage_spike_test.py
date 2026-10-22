@@ -105,7 +105,15 @@ class SpikeTest(absltest.TestCase):
       sample = [l for l in out.splitlines() if l.startswith("Covered ")][:5]
       report.append(f"sample: {sample}")
       outputs.append(out)
-    raw = ecov.parse_cov_output("".join(outputs))
+    all_out = "".join(outputs)
+    interesting = sorted({
+        l for l in all_out.splitlines()
+        if l.startswith("Covered ") and (".h:" in l or "ao_offload" in l
+                                         or not l.startswith("Covered csrc/"))
+    })
+    report.append(f"INTERESTING COVERED ({len(interesting)}):")
+    report += ["  " + l for l in interesting[:300]]
+    raw = ecov.parse_cov_output(all_out)
     covered = {ecov.SourceLoc(_canon(l.path), l.line_number) for l in raw}
     per_file = ecov.get_per_file_coverage(file_to_locs, covered)
     actual = {c.cpp_file: c.to_dict() for c in per_file}
