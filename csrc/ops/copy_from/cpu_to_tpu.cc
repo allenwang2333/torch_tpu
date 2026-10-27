@@ -16,9 +16,11 @@
 
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -72,10 +74,21 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
   // and **not** Tensor::storage().data_ptr().get().
   // On CPU, Tensor::data_ptr() will account for the storage offset, while
   // Tensor::storage().data_ptr().get() will not.
+  const void* host_data = effective_src.data_ptr();
+  // A non-blocking transfer reads the host data after this function returns,
+  // but the caller can free `src` at once, e.g.
+  // `torch.tensor(...).to("tpu", non_blocking=True)`. Stage the data in a
+  // buffer that the transfer owns until it completes.
+  std::vector<uint8_t> staging;
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
+    const auto* begin = static_cast<const uint8_t*>(host_data);
+    staging.assign(begin, begin + effective_src.nbytes());
+    host_data = staging.data();
+  }
   TT_ASSIGN_OR_RETURN(
       DeviceBufferRef tpu_buf,
-      TpuMallocAndMemcpyHtoD(effective_src.data_ptr(), tpu_layout.element_type,
-                             tpu_layout.sizes));
+      TpuMallocAndMemcpyHtoD(host_data, tpu_layout.element_type,
+                             tpu_layout.sizes, std::move(staging)));
   if (transfer_sync_mode == TransferSyncMode::kIsolated) {
     // Block until the transfer completes, assign the buffer, and return without
     // touching any streams.
