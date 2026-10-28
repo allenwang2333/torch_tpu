@@ -74,6 +74,14 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
       !IsTpuPinnedPtr(effective_src.storage().data_ptr().get())) {
     effective_src = effective_src.pin_memory(dest.device());
   }
+  // A blocking host-to-device copy waits only for its own transfer. Waiting
+  // for the whole stream makes every small blocking upload in a serving loop
+  // (e.g. vLLM TorchTPU) wait for all queued work, which slows decode on
+  // TPU v4 by about 40%. The new buffer is not used by any queued program,
+  // so stream order does not matter for it.
+  if (transfer_sync_mode == TransferSyncMode::kEagerBlocking) {
+    transfer_sync_mode = TransferSyncMode::kIsolated;
+  }
 
   TT_ASSIGN_OR_RETURN(TpuLayout tpu_layout, ResolveTpuLayout(effective_src));
 
